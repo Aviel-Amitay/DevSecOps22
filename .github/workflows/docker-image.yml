@@ -1,0 +1,27 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  build-images:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build jobs service
+        run: docker build -t jobboard-jobs:${{ github.sha }} projects/lab-job-board/jobs-service
+
+      - name: Build applications service
+        run: docker build -t jobboard-applications:${{ github.sha }} projects/lab-job-board/applications-service
+
+      - name: Build frontend
+        run: docker build -t jobboard-frontend:${{ github.sha }} projects/lab-job-board/frontend
+
+      - name: Build Nginx proxy
+        run: docker build -t jobboard-nginx:${{ github.sha }} projects/lab-job-board/nginx

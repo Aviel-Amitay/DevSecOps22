@@ -196,6 +196,176 @@ drwxr-xr-x   6 aviela  staff   192B Aug  3 17:27 jobs-service
 drwxr-xr-x  13 aviela  staff   416B Aug  3 17:27 k8s
 drwxr-xr-x   5 aviela  staff   160B Aug  6 16:53 nginx
 drwxr-xr-x   5 aviela  staff   160B Aug  7 00:08 results
+
+aviela@MacBook-M1-Syverse lab-job-board % head -30 backup_*.sql 
+grep -c "INSERT INTO" backup_*.sql >> results/SOLUTION.md
+--
+-- PostgreSQL database dump
+--
+
+\restrict mFMGjTmtGdw1RGEpImdWuiFHbVvu0Tmc6V68Wutms1a9pIScLacf7xjI9QNnkrL
+
+-- Dumped from database version 16.14
+-- Dumped by pg_dump version 16.14
+
+SET statement_timeout = 0;
+SET lock_timeout = 0;
+SET idle_in_transaction_session_timeout = 0;
+SET client_encoding = 'UTF8';
+SET standard_conforming_strings = on;
+SELECT pg_catalog.set_config('search_path', '', false);
+SET check_function_bodies = false;
+SET xmloption = content;
+SET client_min_messages = warning;
+SET row_security = off;
+
+SET default_tablespace = '';
+
+SET default_table_access_method = heap;
+
+--
+-- Name: applications; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.applications (
+    id uuid NOT NULL,
 ```
 
+#### Restore validation on a fresh database
+
+The `init-db/init.sql` file normally creates the tables and seed data when
+PostgreSQL starts with an empty data volume. To prove that the backup itself
+restores both the schema and the data, I temporarily commented out its bind
+mount in `docker-compose.yml`:
+
+```yaml
+volumes:
+  - postgres-data:/var/lib/postgresql/data
+  # - ./init-db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+```
+
+I then removed the existing database volume and started only PostgreSQL. The
+`-v` option is destructive and was used here intentionally to create a clean restore test environment without any existing volumes.
+
+```bash
+docker compose down -v
+docker compose up -d --wait postgres
+```
+
+The `POSTGRES_DB` setting still creates the empty `jobboard` database. Before
+restoring the backup, I verified that it contained no tables:
+
+```bash
+docker exec jobboard-db \
+  psql -U postgres -d jobboard \
+  -c "\\dt"
+```
+
+Expected result:
+
+```text
+Did not find any relations.
+```
+
+Next, I copied the SQL backup into the container and restored it with `psql`.
+`ON_ERROR_STOP=1` makes the command fail immediately if any SQL statement
+cannot be restored.
+
+```bash
+docker cp backup_20260807_000855.sql jobboard-db:/tmp/backup.sql
+
+docker exec jobboard-db \
+  psql -v ON_ERROR_STOP=1 \
+  -U postgres \
+  -d jobboard \
+  -f /tmp/backup.sql
+```
+
+- Finally, I verified that the backup recreated the tables and restored their
+records:
+
+	- Connect into the Docker container.
+
+	```bash
+	docker exec -it jobboard-db psql -U postgres -d jobboard 
+	```
+	- Inside the `psql` run:  
+
+	```psql
+	\conninfo
+	\dt
+	SELECT COUNT(*) FROM jobs;
+	SELECT COUNT(*) FROM applications;
+	SELECT id, title, company FROM jobs;
+	```
+
+- Expect output:
+
+```text
+aviela@MacBook-M1-Syverse lab-job-board % docker exec -it jobboard-db psql -U postgres -d jobboard        
+psql (16.14)
+Type "help" for help.
+
+jobboard=# \conninfo
+You are connected to database "jobboard" as user "postgres" via socket in "/var/run/postgresql" at port "5432".
+jobboard=# \dt
+            List of relations
+ Schema |     Name     | Type  |  Owner   
+--------+--------------+-------+----------
+ public | applications | table | postgres
+ public | jobs         | table | postgres
+(2 rows)
+
+jobboard=# 
+jobboard=# SELECT COUNT(*) FROM jobs;
+ count 
+-------
+     8
+(1 row)
+
+jobboard=# SELECT COUNT(*) FROM applications;
+ count 
+-------
+     0
+(1 row)
+
+jobboard=# 
+jobboard=# SELECT id, title, company FROM jobs;
+                  id                  |             title             |      company      
+--------------------------------------+-------------------------------+-------------------
+ job-001                              | Senior DevOps Engineer        | TechCorp Ltd.
+ job-002                              | Backend Developer (Python)    | StartupXYZ
+ job-003                              | Cloud Architect               | CloudSystems Inc.
+ job-004                              | Frontend Engineer (React)     | ProductLab
+ job-005                              | Security Engineer (DevSecOps) | SecureOps
+ 64b6ab68-f446-4e36-a072-4272c52eb411 | DevOps                        | Any
+ a242de03-34bb-40aa-acdf-548b5b8f2cc1 | Persistence Test Job          | Lab Inc
+ baaf57c9-b032-470a-a56e-e1ca6fa2982f | Persistence Test Job          | Lab Inc
+(8 rows)
+
+jobboard=# 
+jobboard=# \q
+```
+
+After completing the validation, I uncommented the normal initialization mount
+in `docker-compose.yml` and started the complete application:
+
+```yaml
+volumes:
+  - postgres-data:/var/lib/postgresql/data
+  - ./init-db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+```
+
+```bash
+docker compose up -d
+docker compose ps
+```
+
+Because the restored PostgreSQL volume is no longer empty, re-enabling the
+mount does not execute `init.sql` again. PostgreSQL initialization scripts run
+only when the data directory is empty.
+
+---
+
+## Task 4
 

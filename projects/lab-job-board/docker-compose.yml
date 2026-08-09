@@ -19,8 +19,7 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-    # restart: unless-stopped test
-    restart: always
+    restart: unless-stopped
     deploy:
       resources:
         limits:
@@ -40,6 +39,11 @@ services:
         condition: service_healthy
     networks:
       - jobboard-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3" 
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s

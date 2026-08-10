@@ -19,6 +19,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+## Build Docker images
       - name: Build jobs service
         run: docker build -t ${{ env.DOCKERHUB_REPOSITORY }}:jobs-${{ github.sha }} projects/lab-job-board/jobs-service
 
@@ -31,6 +32,7 @@ jobs:
       - name: Build Nginx proxy
         run: docker build -t ${{ env.DOCKERHUB_REPOSITORY }}:nginx-${{ github.sha }} projects/lab-job-board/nginx
 
+## Scan images with Trivy - Task 4.2
       - name: Set up Trivy
         uses: aquasecurity/setup-trivy@v0.2.6
         with:
@@ -76,6 +78,7 @@ jobs:
       - name: Test frontend
         run: curl --fail http://localhost/
 
+## Test API endpoints - Task 4.3
       - name: Test jobs API
         run: |
           curl --fail http://localhost/api/jobs/
@@ -103,6 +106,7 @@ jobs:
         working-directory: projects/lab-job-board
         run: docker compose down -v
 
+## Push to Docker Hub
       - name: Log in to Docker Hub
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
@@ -120,3 +124,4 @@ jobs:
           for image in "${images[@]}"; do
             docker push "${{ env.DOCKERHUB_REPOSITORY }}:${image}-${{ github.sha }}"
           done
+

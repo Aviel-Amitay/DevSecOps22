@@ -380,3 +380,6 @@ only when the data directory is empty.
 
 ![alttext](./images/VerifyBuild.png)
 
+### 4.3 – Add a test 
+
+![alttext](./images/4.3_jobs-service_test.png)

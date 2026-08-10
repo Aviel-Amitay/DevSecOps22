@@ -369,3 +369,14 @@ only when the data directory is empty.
 
 ## Task 4
 
+### 4.1 – Fork and set up the repository 
+- Done
+
+### 4.2 – Trigger and verify the pipeline 
+
+- GitHub Action: https://github.com/Aviel-Amitay/DevSecOps22/actions/runs/31411321092/job/93529817400
+
+- Docker Hub: https://hub.docker.com/repository/docker/aviel770/lab-job-board/tags  
+
+![alttext](./images/VerifyBuild.png)
+

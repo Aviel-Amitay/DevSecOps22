@@ -3,6 +3,7 @@ name: Docker Image CI
 on:
   push:
     branches:
+      - 'main'
       - 'labs'
   pull_request:
     branches:
@@ -11,19 +12,111 @@ on:
 jobs:
   build-images:
     runs-on: ubuntu-24.04
+    env:
+      DOCKERHUB_REPOSITORY: aviel770/lab-job-board
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
       - name: Build jobs service
-        run: docker build -t jobboard-jobs:${{ github.sha }} projects/lab-job-board/jobs-service
+        run: docker build -t ${{ env.DOCKERHUB_REPOSITORY }}:jobs-${{ github.sha }} projects/lab-job-board/jobs-service
 
       - name: Build applications service
-        run: docker build -t jobboard-applications:${{ github.sha }} projects/lab-job-board/applications-service
+        run: docker build -t ${{ env.DOCKERHUB_REPOSITORY }}:applications-${{ github.sha }} projects/lab-job-board/applications-service
 
       - name: Build frontend
-        run: docker build -t jobboard-frontend:${{ github.sha }} projects/lab-job-board/frontend
+        run: docker build -t ${{ env.DOCKERHUB_REPOSITORY }}:frontend-${{ github.sha }} projects/lab-job-board/frontend
 
       - name: Build Nginx proxy
-        run: docker build -t jobboard-nginx:${{ github.sha }} projects/lab-job-board/nginx
+        run: docker build -t ${{ env.DOCKERHUB_REPOSITORY }}:nginx-${{ github.sha }} projects/lab-job-board/nginx
+
+      - name: Set up Trivy
+        uses: aquasecurity/setup-trivy@v0.2.6
+        with:
+          version: v0.70.0
+
+      - name: Scan all Docker images with Trivy
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          images=(
+            "${{ env.DOCKERHUB_REPOSITORY }}:jobs-${{ github.sha }}"
+            "${{ env.DOCKERHUB_REPOSITORY }}:applications-${{ github.sha }}"
+            "${{ env.DOCKERHUB_REPOSITORY }}:frontend-${{ github.sha }}"
+            "${{ env.DOCKERHUB_REPOSITORY }}:nginx-${{ github.sha }}"
+          )
+
+          report_file="trivy-reports/trivy-report-build-${{ github.run_number }}.txt"
+          mkdir -p trivy-reports
+          : > "${report_file}"
+
+          for image in "${images[@]}"; do
+            echo "Scanning ${image}"
+            echo "===== ${image} =====" >> "${report_file}"
+            trivy image \
+              --scanners vuln \
+              --severity HIGH,CRITICAL \
+              --exit-code 0 \
+              --format table \
+              "${image}" | tee -a "${report_file}"
+          done
+
+      - name: Upload Trivy report
+        uses: actions/upload-artifact@v4
+        with:
+          name: trivy-report-build-${{ github.run_number }}
+          path: trivy-reports/trivy-report-build-${{ github.run_number }}.txt
+
+      - name: Start complete application
+        working-directory: projects/lab-job-board
+        run: docker compose up --build -d --wait
+
+      - name: Test frontend
+        run: curl --fail http://localhost/
+
+      - name: Test jobs API
+        run: |
+          curl --fail http://localhost/api/jobs/
+
+          curl --fail \
+            -X POST http://localhost/api/jobs/ \
+            -H "Content-Type: application/json" \
+            -d '{
+             "title": "CI Test Job",
+             "description": "Created during integration testing",
+             "company": "CI",
+              "location": "Remote"
+            }'
+
+      - name: Test applications API
+        run: curl --fail http://localhost/api/applications/
+
+      - name: Show logs if a test fails
+        if: failure()
+        working-directory: projects/lab-job-board
+        run: docker compose logs
+
+      - name: Stop application
+        if: always()
+        working-directory: projects/lab-job-board
+        run: docker compose down -v
+
+      - name: Log in to Docker Hub
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push all images to Docker Hub
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          images=(jobs applications frontend nginx)
+          for image in "${images[@]}"; do
+            docker push "${{ env.DOCKERHUB_REPOSITORY }}:${image}-${{ github.sha }}"
+          done

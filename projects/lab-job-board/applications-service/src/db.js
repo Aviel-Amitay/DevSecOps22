@@ -1,11 +1,29 @@
 'use strict';
 
 const { Pool } = require('pg');
+const fs = require('fs');
+
+function databaseUrl() {
+  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
+
+  const passwordFile = process.env.POSTGRES_PASSWORD_FILE || '/run/secrets/db_password';
+  const password = fs.existsSync(passwordFile)
+    ? fs.readFileSync(passwordFile, 'utf8').trim()
+    : process.env.POSTGRES_PASSWORD;
+  if (!password) {
+    throw new Error('Set DATABASE_URL or provide POSTGRES_PASSWORD_FILE');
+  }
+  const user = encodeURIComponent(process.env.POSTGRES_USER || 'postgres');
+  const encodedPassword = encodeURIComponent(password);
+  const host = process.env.POSTGRES_HOST || 'localhost';
+  const port = process.env.POSTGRES_PORT || '5432';
+  const database = process.env.POSTGRES_DB || 'jobboard';
+
+  return `postgresql://${user}:${encodedPassword}@${host}:${port}/${database}`;
+}
 
 const pool = new Pool({
-  connectionString:
-    process.env.DATABASE_URL ||
-    'postgresql://postgres:jobboard123@localhost:5432/jobboard',
+  connectionString: databaseUrl(),
   max: 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 5000,

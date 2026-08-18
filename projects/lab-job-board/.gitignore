@@ -1,5 +1,6 @@
 # Environment
 .env
+db_password.txt
 
 # Python
 __pycache__/

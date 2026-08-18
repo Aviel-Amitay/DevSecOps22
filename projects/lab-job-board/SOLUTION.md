@@ -378,8 +378,209 @@ only when the data directory is empty.
 
 - Docker Hub: https://hub.docker.com/repository/docker/aviel770/lab-job-board/tags  
 
-![alttext](./images/VerifyBuild.png)
+![Successful GitHub Actions pipeline](./results/images/VerifyBuild.png)
 
 ### 4.3 – Add a test 
 
-![alttext](./images/4.3_jobs-service_test.png)
+- Added four tests under `jobs-service/tests/test_main.py`:
+  - `GET /health` returns status `200` and `status: healthy`.
+  - `POST /jobs/` with valid data returns status `201`.
+  - `POST /jobs/` with missing fields returns status `422`.
+  - `GET /jobs/{id}` with a missing ID returns status `404`.
+
+- Run the tests inside the built image so no local Python installation is
+  required:
+
+```bash
+docker compose build jobs-service
+
+docker run --rm \
+  -e PYTHONPATH=/app \
+  -v "$PWD/jobs-service/tests:/app/tests:ro" \
+  -w /app \
+  lab-job-board-jobs-service:latest \
+  pytest tests -q
+```
+
+- Result:
+
+```text
+....                                                                     [100%]
+4 passed in 0.42s
+```
+
+- The tests do not require PostgreSQL. They set `DATABASE_URL=sqlite://` before
+  importing the application and replace FastAPI's `get_db` dependency with a
+  `MagicMock`. This lets the CI pipeline test the API responses without a real
+  database connection.
+
+![Passing jobs-service tests](./results/images/4.3_jobs-service_test.png)
+
+---
+
+## Task 5
+
+### 5.1 – Understand the Docker network
+
+- I inspected the network and formatted the output to show each container name
+  and IP address:  
+  
+```bash
+docker network inspect jobboard-network \
+  --format '{{range .Containers}}{{.Name}} {{.IPv4Address}}{{println}}{{end}}'
+  ```
+
+- List all containers on the network with their IP addresses:  
+
+
+```text
+jobboard-db           172.20.0.2/16
+jobs-service         172.20.0.3/16
+applications-service 172.20.0.4/16
+jobboard-frontend     172.20.0.5/16
+nginx-proxy           172.20.0.6/16
+```
+
+- Explain how jobs-service resolves the hostname postgres (Docker's embedded DNS)
+
+  - Docker Compose connects both containers to `jobboard-network`, because on the default bridge, we don't have resolve DNS, so we can't reach the postgress DB.
+
+- What happens if you try to reach jobs-service:8000 from your browser directly? Why?
+
+  - It fails because jobs-service is a hostname available only inside the Docker network.
+  - Port `8000` is not published to the host machine.
+  - The browser must use `http://localhost/api/jobs/`, which goes through the
+    Nginx reverse proxy.
+
+- Note: The commiunication between container done with the service, due if we terminate and reapply the `docker compose`,  IP addresses might changed after recreating the network.  
+
+### 5.2 – Inter-service communication test
+
+- Test the PostgreSQL connection from `jobs-service`:
+
+```bash
+docker exec jobs-service python3 -c "
+import psycopg2
+from app.database import DATABASE_URL
+conn = psycopg2.connect(DATABASE_URL)
+print('Connected to PostgreSQL:', conn.get_dsn_parameters())
+conn.close()
+"
+```
+
+- Output:
+
+```text
+Connected to PostgreSQL: {'user': 'postgres', 'channel_binding': 'prefer', 'dbname': 'jobboard', 'host': 'postgres', 'port': '5432'
+```
+
+- The connection succeeded through the private Docker network. The Python
+  service constructs `DATABASE_URL` from the mounted password secret.
+
+- Test communication with the applications service:
+
+```bash
+docker exec jobs-service python3 -c "
+import urllib.request
+print(urllib.request.urlopen(
+    'http://applications-service:3001/health'
+).read().decode())
+"
+```
+
+- Output:
+
+```json
+{"status":"healthy","service":"applications-service","version":"1.0.0"}
+```
+
+### 5.3 – Nginx routing analysis
+
+- Request:
+
+```text
+Browser -> POST http://localhost/api/applications/
+```
+
+1. Which Nginx location block matches?
+
+   - Nginx receives the request on port `80` and matches the location defined
+     in [nginx/nginx.conf](./nginx/nginx.conf):
+
+   ```nginx
+   location /api/applications {
+       limit_req zone=api burst=20 nodelay;
+
+       rewrite ^/api/applications/(.*) /applications/$1 break;
+       rewrite ^/api/applications$     /applications    break;
+
+       proxy_pass         http://applications_service;
+       proxy_http_version 1.1;
+       proxy_set_header   Host              $host;
+       proxy_set_header   X-Real-IP         $remote_addr;
+       proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+       proxy_read_timeout 30s;
+   }
+   ```
+
+2. What does the rewrite rule transform the path to?
+
+   ```text
+   /api/applications/ -> /applications/
+   ```
+
+3. Which upstream container receives the request and on which port?
+
+   - `proxy_pass http://applications_service` sends the request to the
+     `applications-service` container on port `3001`.
+
+4. How does the response travel back to the browser?
+
+   - Express processes the POST request and sends its response to Nginx. Nginx
+     then returns the status, headers, and body to the browser.
+
+   ```text
+   Browser -> nginx:80 -> applications-service:3001 -> nginx -> Browser
+   ```
+
+---
+
+## Task 6 (Bonus)
+
+### 6.1 – Docker secrets
+
+The Compose stack defines `db_password` from the Git-ignored
+`db_password.txt` file and mounts it read-only at
+`/run/secrets/db_password` in PostgreSQL and both API containers. PostgreSQL
+uses `POSTGRES_PASSWORD_FILE`. The Python and Node services read the same file
+at startup, URL-encode the value, and construct their database URLs internally.
+
+Setup and verification:
+
+```bash
+cp db_password.txt.example db_password.txt
+docker compose up --build -d
+docker compose exec postgres test -r /run/secrets/db_password
+docker compose exec jobs-service test -r /run/secrets/db_password
+docker compose exec applications-service test -r /run/secrets/db_password
+```
+
+- `db_password.txt` is intentionally excluded by `.gitignore`, as it include a password.
+- A dummy file [./db_password.txt.example](./db_password.txt.example) is available to copy as `./db_password.txt` file.  
+
+### 6.2 – Content Security Policy
+
+Update `nginx/nginx.conf` to add a `Content-Security-Policy` header that:
+
+- Allows scripts only from `self`
+- Allows styles from `self` and inline
+- Blocks all `frame-ancestors`
+
+```bash
+aviela@MacBook-M1-Syverse lab-job-board % curl -sI http://localhost | grep -i content-security
+```
+- Output  
+```text
+Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'
+aviela@MacBook-M1-Syverse lab-job-board % 
+```

@@ -185,19 +185,169 @@ kubectl logs -f job/seed-database -n jobboard
 
 ### Step 7 — Open the application
 
+With Minikube's Docker driver, the address returned by `minikube ip` (commonly
+`192.168.49.2`) may not be reachable directly from a macOS or Windows host.
+Forward the ingress controller to a local port instead.
+
+  - [Windows](#windows-powershell)
+  - [MacOS](#macos)  
+
+--- 
+#### MacOS
+
+In the first Terminal window, run this command and leave it running:
+
 ```bash
-# Get the minikube IP
-MINIKUBE_IP=$(minikube ip)
-echo "App URL: http://$MINIKUBE_IP"
-
-# Quick smoke test
-curl -s http://$MINIKUBE_IP/api/jobs/ | python3 -m json.tool | head -20
-
-# Open in browser
-minikube service -n ingress-nginx ingress-nginx-controller --url
-# OR on macOS/Linux:
-open http://$MINIKUBE_IP
+kubectl port-forward \
+  -n ingress-nginx \
+  service/ingress-nginx-controller \
+  8081:80
 ```
+
+Expected output:
+
+```text
+Forwarding from 127.0.0.1:8081 -> 80
+Forwarding from [::1]:8081 -> 80
+```
+
+This confirms that `kubectl` is listening on local port `8081` and forwarding
+traffic to port `80` of the Kubernetes ingress controller. Keep this Terminal
+window open. Each time the browser or `curl` sends a request through the
+forward, another message appears:
+
+```text
+Handling connection for 8081
+```
+
+Seeing this message confirms that a client connected through the Kubernetes
+port-forward. Multiple messages are normal because a browser requests the HTML,
+JavaScript, CSS, API data, and other resources separately.
+
+In a second Terminal window, verify the API:
+
+```bash
+curl --max-time 10 -sS http://127.0.0.1:8081/api/jobs \
+  | python3 -m json.tool \
+  | head -20
+```
+
+`json.tool` is part of Python. It reads the JSON produced by `curl` from
+standard input and formats it; it is not a file in this repository or in a
+pod. Running `python3 -m json.tool` without input waits for input.
+
+Open the application in a browser:
+
+```bash
+open http://127.0.0.1:8081
+```
+
+Verify that Kubernetes, rather than Docker Compose, owns the local port:
+
+```bash
+lsof -nP -iTCP:8081 -sTCP:LISTEN
+```
+
+The `COMMAND` column should show `kubectl`. Docker Compose can be ruled out by
+checking its published ports:
+
+```bash
+docker ps --format 'table {{.Names}}\t{{.Ports}}'
+```
+
+No Docker container should publish port `8081`.
+
+#### Windows (PowerShell)
+
+In the first PowerShell window, run this command and leave it running:
+
+```powershell
+kubectl port-forward -n ingress-nginx service/ingress-nginx-controller 8081:80
+```
+
+In a second PowerShell window, verify the API. Use `curl.exe` because
+Windows PowerShell may use `curl` as an alias for `Invoke-WebRequest`:
+
+```powershell
+curl.exe --max-time 10 -sS http://127.0.0.1:8081/api/jobs |
+  python -m json.tool |
+  Select-Object -First 20
+```
+
+Open the application in the default browser:
+
+```powershell
+Start-Process http://127.0.0.1:8081
+```
+
+Verify that `kubectl` owns port `8081`:
+
+```powershell
+$Connection = Get-NetTCPConnection -LocalPort 8081 -State Listen
+Get-Process -Id $Connection.OwningProcess
+```
+
+The process name should be `kubectl`. The port-forward window also prints
+`Handling connection for 8081` when the browser or `curl.exe` connects.
+
+Check that Docker Compose does not publish port `8081`:
+
+```powershell
+docker ps --format 'table {{.Names}}\t{{.Ports}}'
+docker compose ps
+```
+
+No Docker container should show a mapping such as `0.0.0.0:8081->80/tcp`.
+
+If `Get-NetTCPConnection` is unavailable, use these commands instead:
+
+```powershell
+netstat -ano | findstr :8081
+tasklist /FI "PID eq <PID_FROM_NETSTAT>"
+```
+
+The final column from `netstat` is the process ID. Replace
+`<PID_FROM_NETSTAT>` with that number; `tasklist` should identify `kubectl.exe`.
+
+#### Issue summary and resolution
+
+The workloads were healthy, but the application initially failed in the
+browser for two separate reasons:
+
+1. The Minikube IP was not directly reachable from the macOS/Windows host when
+   using the Docker driver. Requests to `http://$MINIKUBE_IP` therefore waited
+   until they timed out. Forwarding ingress to `127.0.0.1:8081` provides a
+   reachable local address.
+2. The frontend called `/api/jobs/` with a trailing slash. FastAPI redirected
+   `/jobs/` to `/jobs`, and that redirect escaped the `/api` ingress prefix.
+   The request then reached the React catch-all and returned HTML instead of
+   JSON. The frontend now calls `/api/jobs`, and the ingress rewrite rules keep
+   requests under the correct API route.
+
+Successful verification should return HTTP 200 and JSON:
+
+```bash
+curl -i --max-time 10 http://127.0.0.1:8081/api/jobs
+curl -sS http://127.0.0.1:8081/api/applications \
+  | python3 -m json.tool
+kubectl get pods -n jobboard
+```
+
+If port `8081` is already occupied, find its owner before selecting another
+local port. On macOS:
+
+```bash
+lsof -nP -iTCP:8081 -sTCP:LISTEN
+```
+
+On Windows PowerShell:
+
+```powershell
+Get-NetTCPConnection -LocalPort 8081 -State Listen
+```
+
+For example, `8082:80` exposes the same Kubernetes ingress at
+`http://127.0.0.1:8082`; no manifest change is required.
 
 ---
 
@@ -649,6 +799,9 @@ minikube delete
 | `CrashLoopBackOff` | App crashes on startup | `kubectl logs <pod> --previous` |
 | Ingress returns 404 | Wrong path / missing rewrite | Check `kubectl describe ingress -n jobboard` |
 | Ingress returns 503 | Upstream pod not ready | Check readiness probe: `kubectl get endpoints -n jobboard` |
+| Request to `$MINIKUBE_IP` waits or times out on macOS/Windows | Minikube Docker-driver IP is not directly reachable | Port-forward ingress: `kubectl port-forward -n ingress-nginx service/ingress-nginx-controller 8081:80` |
+| `json.tool` reports `Expecting value` | The response was empty or HTML instead of JSON | Inspect it first with `curl -i --max-time 10 http://127.0.0.1:8081/api/jobs` |
+| Port-forward reports `address already in use` | Another process owns the selected local port | Check with `lsof` (macOS) or `Get-NetTCPConnection` (Windows), or use another port such as `8082:80` |
 | HPA shows `<unknown>` CPU | metrics-server not running | `minikube addons enable metrics-server` |
 | Secret decode error | Wrong base64 padding | Use `echo -n "value" | base64` (the `-n` flag is required) |
 

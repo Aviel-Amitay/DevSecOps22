@@ -24,7 +24,7 @@ resources:
   - 07-hpa.yaml
 
 # Uncomment after all services are Running + Ready:
-# - 08-seed-job.yaml
+  - 08-seed-job.yaml
 
 commonLabels:
   app.kubernetes.io/part-of: jobboard

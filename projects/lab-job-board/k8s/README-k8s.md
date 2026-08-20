@@ -23,8 +23,8 @@ All Kubernetes manifests are provided in the `k8s/` directory. Your job is to **
        ▼
   ┌─────────────────────────────────────────────────────────┐
   │            NGINX Ingress Controller (Pod)               │
-  │  /api/jobs(/|$)(.*)      → jobs-service:8000            │
-  │  /api/applications(/|$)(.*) → applications-service:3001 │
+  │  /api/jobs(/.*)?         → jobs-service:8000            │
+  │  /api/applications(/.*)? → applications-service:3001    │
   │  /                       → frontend:80                  │
   └────────────┬──────────────────┬─────────────────────────┘
                │                  │
@@ -186,17 +186,14 @@ kubectl logs -f job/seed-database -n jobboard
 ### Step 7 — Open the application
 
 ```bash
-# Get the minikube IP
-MINIKUBE_IP=$(minikube ip)
-echo "App URL: http://$MINIKUBE_IP"
+# Forward ingress to a browser-accessible local port. Keep this terminal open.
+# This works on macOS with the Docker driver, where `minikube ip` is not
+# directly reachable from the host.
+kubectl port-forward -n ingress-nginx service/ingress-nginx-controller 8080:80
 
-# Quick smoke test
-curl -s http://$MINIKUBE_IP/api/jobs/ | python3 -m json.tool | head -20
-
-# Open in browser
-minikube service -n ingress-nginx ingress-nginx-controller --url
-# OR on macOS/Linux:
-open http://$MINIKUBE_IP
+# In a second terminal, smoke-test and open the application.
+curl -s http://127.0.0.1:8080/api/jobs | python3 -m json.tool | head -20
+open http://127.0.0.1:8080
 ```
 
 ---
